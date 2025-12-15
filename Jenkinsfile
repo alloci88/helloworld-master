@@ -159,9 +159,9 @@ pipeline {
                 echo === Logs (if any) ===
                 if exist %FLASK_LOG% type %FLASK_LOG%
                 if exist %WIREMOCK_LOG% type %WIREMOCK_LOG%
+                exit /b 0
             '''
-            archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid', fingerprint: true, allowEmptyArchive: true
-            exit /b 0
+            archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid', fingerprint: true, allowEmptyArchive: true   
         }
     }
 }
