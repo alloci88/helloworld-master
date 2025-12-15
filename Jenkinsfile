@@ -14,7 +14,7 @@ pipeline {
         WIREMOCK_DIR = "test\\wiremock"
         WIREMOCK_JAR = "test\\wiremock\\wiremock-standalone-3.13.2.jar"
 
-        WAIT_TIMEOUT_SECONDS = "30"
+        WAIT_TIMEOUT_SECONDS = "60"
 
         FLASK_PID_FILE = "flask.pid"
         WIREMOCK_PID_FILE = "wiremock.pid"
