@@ -7,20 +7,17 @@ pipeline {
 
     environment {
         VENV_DIR = ".venv"
-
         FLASK_PORT = "5000"
         WIREMOCK_PORT = "9090"
-
-        WIREMOCK_DIR = "test\\wiremock"
         WIREMOCK_JAR = "test\\wiremock\\wiremock-standalone-3.13.2.jar"
-
-        WAIT_TIMEOUT_SECONDS = "60"
-
+        WAIT_TIMEOUT_SECONDS = "120"
         FLASK_PID_FILE = "flask.pid"
         WIREMOCK_PID_FILE = "wiremock.pid"
-
-        FLASK_LOG = "flask.log"
-        WIREMOCK_LOG = "wiremock.log"
+        FLASK_LOG_OUT = "flask.out.log"
+        FLASK_LOG_ERR = "flask.err.log"
+        WIREMOCK_LOG_OUT = "wiremock.out.log"
+        WIREMOCK_LOG_ERR = "wiremock.err.log"
+        WAIT_SCRIPT = "wait_ports.py"
     }
 
     stages {
@@ -88,43 +85,76 @@ pipeline {
                 bat '''
                     @echo on
                     call %VENV_DIR%\\Scripts\\activate.bat
-                    set PYTHONPATH=%CD%
-        
+
+                    echo === Pre-clean old PID/log files (workspace leftovers) ===
+                    del /f /q %FLASK_PID_FILE% 1>NUL 2>&1
+                    del /f /q %WIREMOCK_PID_FILE% 1>NUL 2>&1
+                    del /f /q %FLASK_LOG_OUT% 1>NUL 2>&1
+                    del /f /q %FLASK_LOG_ERR% 1>NUL 2>&1
+                    del /f /q %WIREMOCK_LOG_OUT% 1>NUL 2>&1
+                    del /f /q %WIREMOCK_LOG_ERR% 1>NUL 2>&1
+                    del /f /q %WAIT_SCRIPT% 1>NUL 2>&1
+
                     echo === Starting Flask on %FLASK_PORT% ===
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                      "$ErrorActionPreference='Stop';" ^
-                      "if (Test-Path '%FLASK_PID_FILE%') { Remove-Item -Force '%FLASK_PID_FILE%' }" ^
-                      "if (Test-Path '%FLASK_LOG%') { Remove-Item -Force '%FLASK_LOG%' }" ^
-                      "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','call %VENV_DIR%\\Scripts\\activate.bat ^& set PYTHONPATH=%CD% ^& set FLASK_RUN_PORT=%FLASK_PORT% ^& python -m flask --app app.api run --host 127.0.0.1 --port %FLASK_PORT% > %FLASK_LOG% 2>&1' -PassThru -WindowStyle Hidden;" ^
+                      "$p = Start-Process -FilePath 'python' -ArgumentList '-m','flask','--app','app.api','run','--host','127.0.0.1','--port','%FLASK_PORT%' -PassThru -RedirectStandardOutput '%FLASK_LOG_OUT%' -RedirectStandardError '%FLASK_LOG_ERR%';" ^
                       "$p.Id | Out-File -Encoding ascii '%FLASK_PID_FILE%';" ^
                       "Write-Host ('Flask PID: ' + $p.Id)"
-        
+
                     echo === Starting WireMock on %WIREMOCK_PORT% ===
+                    if not exist "%WIREMOCK_JAR%" (
+                        echo ERROR: WireMock jar not found at %WIREMOCK_JAR%
+                        exit /b 2
+                    )
+
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                      "$ErrorActionPreference='Stop';" ^
-                      "if (!(Test-Path '%WIREMOCK_JAR%')) { Write-Host 'WireMock jar not found'; exit 2 }" ^
-                      "if (Test-Path '%WIREMOCK_PID_FILE%') { Remove-Item -Force '%WIREMOCK_PID_FILE%' }" ^
-                      "if (Test-Path '%WIREMOCK_LOG%') { Remove-Item -Force '%WIREMOCK_LOG%' }" ^
-                      "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%','--root-dir','%WIREMOCK_DIR%' -PassThru -WindowStyle Hidden -RedirectStandardOutput '%WIREMOCK_LOG%';" ^
+                      "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%' -PassThru -RedirectStandardOutput '%WIREMOCK_LOG_OUT%' -RedirectStandardError '%WIREMOCK_LOG_ERR%';" ^
                       "$p.Id | Out-File -Encoding ascii '%WIREMOCK_PID_FILE%';" ^
                       "Write-Host ('WireMock PID: ' + $p.Id)"
-        
+
+                    echo === Small grace period (avoid race) ===
+                    timeout /t 2 /nobreak >NUL
+
+                    echo === Writing wait script (%WAIT_SCRIPT%) ===
+                    >  %WAIT_SCRIPT% echo import socket, time, sys
+                    >> %WAIT_SCRIPT% echo PORTS = [int("%FLASK_PORT%"), int("%WIREMOCK_PORT%")]
+                    >> %WAIT_SCRIPT% echo TIMEOUT = int("%WAIT_TIMEOUT_SECONDS%")
+                    >> %WAIT_SCRIPT% echo def open_port(p):
+                    >> %WAIT_SCRIPT% echo^    try:
+                    >> %WAIT_SCRIPT% echo^        s = socket.create_connection(("127.0.0.1", p), 1)
+                    >> %WAIT_SCRIPT% echo^        s.close()
+                    >> %WAIT_SCRIPT% echo^        return True
+                    >> %WAIT_SCRIPT% echo^    except OSError:
+                    >> %WAIT_SCRIPT% echo^        return False
+                    >> %WAIT_SCRIPT% echo end = time.time() + TIMEOUT
+                    >> %WAIT_SCRIPT% echo while time.time() ^< end:
+                    >> %WAIT_SCRIPT% echo^    states = {p: open_port(p) for p in PORTS}
+                    >> %WAIT_SCRIPT% echo^    if all(states.values()):
+                    >> %WAIT_SCRIPT% echo^        print("Ports ready:", states)
+                    >> %WAIT_SCRIPT% echo^        sys.exit(0)
+                    >> %WAIT_SCRIPT% echo^    time.sleep(0.5)
+                    >> %WAIT_SCRIPT% echo print("Ports NOT ready:", {p: open_port(p) for p in PORTS})
+                    >> %WAIT_SCRIPT% echo sys.exit(1)
+
                     echo === Waiting for ports (timeout %WAIT_TIMEOUT_SECONDS%s) ===
-                    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                      "$timeout=[int]'%WAIT_TIMEOUT_SECONDS%';" ^
-                      "$ports=@([int]'%FLASK_PORT%',[int]'%WIREMOCK_PORT%');" ^
-                      "$deadline=(Get-Date).AddSeconds($timeout);" ^
-                      "function Test-Port($p){ try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $true } catch { $false } }" ^
-                      "while((Get-Date) -lt $deadline) {" ^
-                      "  $states = $ports | ForEach-Object { Test-Port $_ };" ^
-                      "  if(($states | Where-Object {$_ -eq $false}).Count -eq 0) { Write-Host 'Ports ready'; exit 0 }" ^
-                      "  Start-Sleep -Milliseconds 500" ^
-                      "}" ^
-                      "Write-Host 'Ports NOT ready'; exit 1"
+                    py -3 %WAIT_SCRIPT%
+                    set WAIT_EXIT=%ERRORLEVEL%
+
+                    echo === Diagnostics: netstat for ports ===
+                    netstat -ano | findstr ":%FLASK_PORT%"
+                    netstat -ano | findstr ":%WIREMOCK_PORT%"
+
+                    if not "%WAIT_EXIT%"=="0" (
+                        echo === Wait failed. Dumping logs ===
+                        if exist %FLASK_LOG_OUT% type %FLASK_LOG_OUT%
+                        if exist %FLASK_LOG_ERR% type %FLASK_LOG_ERR%
+                        if exist %WIREMOCK_LOG_OUT% type %WIREMOCK_LOG_OUT%
+                        if exist %WIREMOCK_LOG_ERR% type %WIREMOCK_LOG_ERR%
+                        exit /b 1
+                    )
                 '''
             }
         }
-
 
         stage('Integration tests (REST)') {
             steps {
@@ -150,18 +180,18 @@ pipeline {
             bat '''
                 @echo on
                 echo === Cleaning up services (PID-based, PowerShell) ===
-
                 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
                   "$ErrorActionPreference='SilentlyContinue';" ^
-                  "if (Test-Path '%WIREMOCK_PID_FILE%') { $pid = (Get-Content '%WIREMOCK_PID_FILE%' | Select-Object -First 1); if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-Host ('Stopped WireMock PID ' + $pid) } Remove-Item -Force '%WIREMOCK_PID_FILE%' } else { Write-Host 'WireMock PID file not found, skipping' }" ^
-                  "if (Test-Path '%FLASK_PID_FILE%') { $pid = (Get-Content '%FLASK_PID_FILE%' | Select-Object -First 1); if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-Host ('Stopped Flask PID ' + $pid) } Remove-Item -Force '%FLASK_PID_FILE%' } else { Write-Host 'Flask PID file not found, skipping' }"
+                  "if (Test-Path '%WIREMOCK_PID_FILE%') { $pid=(Get-Content '%WIREMOCK_PID_FILE%'|Select-Object -First 1); if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-Host ('Stopped WireMock PID ' + $pid) } Remove-Item -Force '%WIREMOCK_PID_FILE%' }" ^
+                  "if (Test-Path '%FLASK_PID_FILE%') { $pid=(Get-Content '%FLASK_PID_FILE%'|Select-Object -First 1); if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Write-Host ('Stopped Flask PID ' + $pid) } Remove-Item -Force '%FLASK_PID_FILE%' }"
 
                 echo === Logs (if any) ===
-                if exist %FLASK_LOG% type %FLASK_LOG%
-                if exist %WIREMOCK_LOG% type %WIREMOCK_LOG%
-                exit /b 0
+                if exist %FLASK_LOG_OUT% type %FLASK_LOG_OUT%
+                if exist %FLASK_LOG_ERR% type %FLASK_LOG_ERR%
+                if exist %WIREMOCK_LOG_OUT% type %WIREMOCK_LOG_OUT%
+                if exist %WIREMOCK_LOG_ERR% type %WIREMOCK_LOG_ERR%
             '''
-            archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid', fingerprint: true, allowEmptyArchive: true   
+            archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid,*.py', fingerprint: true, allowEmptyArchive: true
         }
     }
 }
