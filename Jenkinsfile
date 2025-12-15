@@ -10,8 +10,10 @@ pipeline {
         FLASK_PORT = "5000"
         WIREMOCK_PORT = "9090"
         WIREMOCK_DIR = "test\\wiremock"
-        WIREMOCK_JAR = "test\\wiremock\\wiremock-standalone.jar"
+        WIREMOCK_JAR = "test\\wiremock\\mappings\\wiremock-standalone-3.13.2.jar"
         WAIT_TIMEOUT_SECONDS = "30"
+        FLASK_PID_FILE = "flask.pid"
+        WIREMOCK_PID_FILE = "wiremock.pid"
     }
 
     stages {
@@ -81,20 +83,26 @@ pipeline {
                     call %VENV_DIR%\\Scripts\\activate.bat
                     set PYTHONPATH=%CD%
 
+                    if exist %FLASK_PID_FILE% del /f /q %FLASK_PID_FILE%
+                    if exist %WIREMOCK_PID_FILE% del /f /q %WIREMOCK_PID_FILE%
+
                     echo === Starting Flask on %FLASK_PORT% ===
-                    start "flask-api" /B cmd /c "set FLASK_APP=app\\api.py && flask run --host=127.0.0.1 --port=%FLASK_PORT% > flask.log 2>&1"
+                    for /f "tokens=2 delims== " %%P in ('wmic process call create "cmd /c set FLASK_APP=app\\api.py ^& flask run --host=127.0.0.1 --port=%FLASK_PORT% ^> flask.log 2^>^&1" ^| find "ProcessId"') do (
+                        echo %%P > %FLASK_PID_FILE%
+                    )
 
                     echo === Starting WireMock on %WIREMOCK_PORT% ===
                     if exist "%WIREMOCK_JAR%" (
-                        start "wiremock" /B cmd /c "java -jar %WIREMOCK_JAR% --port %WIREMOCK_PORT% --root-dir %WIREMOCK_DIR% > wiremock.log 2>&1"
+                        for /f "tokens=2 delims== " %%P in ('wmic process call create "cmd /c java -jar %WIREMOCK_JAR% --port %WIREMOCK_PORT% --root-dir %WIREMOCK_DIR% ^> wiremock.log 2^>^&1" ^| find "ProcessId"') do (
+                            echo %%P > %WIREMOCK_PID_FILE%
+                        )
                     ) else (
                         echo Wiremock jar not found at %WIREMOCK_JAR%
                         exit /b 2
                     )
 
                     echo === Waiting for ports (timeout %WAIT_TIMEOUT_SECONDS%s) ===
-                    python -c "import socket,time,sys; \
-t=time.time()+int('%WAIT_TIMEOUT_SECONDS%'); \
+                    python -c "import socket,time,sys; t=time.time()+int('%WAIT_TIMEOUT_SECONDS%'); \
 def ok(p): \
   try: s=socket.create_connection(('127.0.0.1',p),1); s.close(); return True; \
   except OSError: return False; \
@@ -129,15 +137,31 @@ sys.exit(0 if all(ok(p) for p in ports) else 1)"
         always {
             bat '''
                 @echo on
-                echo === Cleaning up background processes (best-effort) ===
-                taskkill /F /IM java.exe /T >NUL 2>&1
-                taskkill /F /IM python.exe /T >NUL 2>&1
+                echo === Cleaning up services (PID-based) ===
+
+                if exist %WIREMOCK_PID_FILE% (
+                    set /p WMPID=<%WIREMOCK_PID_FILE%
+                    echo Stopping WireMock PID %WMPID%
+                    taskkill /F /PID %WMPID% >NUL 2>&1
+                    del /f /q %WIREMOCK_PID_FILE% >NUL 2>&1
+                ) else (
+                    echo WireMock PID file not found, skipping
+                )
+
+                if exist %FLASK_PID_FILE% (
+                    set /p FPID=<%FLASK_PID_FILE%
+                    echo Stopping Flask PID %FPID%
+                    taskkill /F /PID %FPID% >NUL 2>&1
+                    del /f /q %FLASK_PID_FILE% >NUL 2>&1
+                ) else (
+                    echo Flask PID file not found, skipping
+                )
 
                 echo === Logs (if any) ===
                 if exist flask.log type flask.log
                 if exist wiremock.log type wiremock.log
             '''
-            archiveArtifacts artifacts: 'reports/*.xml,*.log', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid', fingerprint: true, allowEmptyArchive: true
         }
     }
 }
