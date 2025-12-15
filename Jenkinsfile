@@ -108,9 +108,9 @@ pipeline {
                     )
 
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                      "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%' -PassThru -RedirectStandardOutput '%WIREMOCK_LOG_OUT%' -RedirectStandardError '%WIREMOCK_LOG_ERR%';" ^
-                      "$p.Id | Out-File -Encoding ascii '%WIREMOCK_PID_FILE%';" ^
-                      "Write-Host ('WireMock PID: ' + $p.Id)"
+                     "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%','--root-dir','test\\wiremock' -PassThru -RedirectStandardOutput '%WIREMOCK_LOG_OUT%' -RedirectStandardError '%WIREMOCK_LOG_ERR%';" ^
+                     "$p.Id | Out-File -Encoding ascii '%WIREMOCK_PID_FILE%';" ^
+                     "Write-Host ('WireMock PID: ' + $p.Id)"
 
                     echo === Small grace period (avoid race) ===
                     timeout /t 2 /nobreak >NUL
