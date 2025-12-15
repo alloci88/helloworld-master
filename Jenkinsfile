@@ -14,6 +14,7 @@ pipeline {
             steps {
                 checkout scm
                 bat '''
+                    @echo on
                     whoami
                     hostname
                     dir
@@ -28,10 +29,17 @@ pipeline {
                     py -3 --version
                     py -3 -m venv %VENV_DIR%
                     call %VENV_DIR%\\Scripts\\activate.bat
+
                     python -m pip install --upgrade pip
+
                     if exist requirements.txt pip install -r requirements.txt
                     if exist requirements-dev.txt pip install -r requirements-dev.txt
+
                     pip install pytest pytest-cov junit-xml requests
+
+                    rem Sanity check: asegurar import de app
+                    set PYTHONPATH=%CD%
+                    python -c "import app; print('app import OK')"
                 '''
             }
         }
@@ -50,6 +58,10 @@ pipeline {
                 bat '''
                     @echo on
                     call %VENV_DIR%\\Scripts\\activate.bat
+
+                    rem Asegura que "app" se puede importar
+                    set PYTHONPATH=%CD%
+
                     if not exist reports mkdir reports
                     pytest -q test\\unit --junitxml=reports\\junit-unit.xml
                 '''
@@ -66,6 +78,10 @@ pipeline {
                 bat '''
                     @echo on
                     call %VENV_DIR%\\Scripts\\activate.bat
+
+                    rem Asegura que "app" se puede importar
+                    set PYTHONPATH=%CD%
+
                     if not exist reports mkdir reports
                     pytest -q test\\rest --junitxml=reports\\junit-rest.xml
                 '''
