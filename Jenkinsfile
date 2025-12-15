@@ -11,6 +11,7 @@ pipeline {
         WIREMOCK_PORT = "9090"
         WIREMOCK_DIR = "test\\wiremock"
         WIREMOCK_JAR = "test\\wiremock\\wiremock-standalone.jar"
+        WAIT_TIMEOUT_SECONDS = "30"
     }
 
     stages {
@@ -35,13 +36,11 @@ pipeline {
                     call %VENV_DIR%\\Scripts\\activate.bat
 
                     python -m pip install --upgrade pip
-
                     if exist requirements.txt pip install -r requirements.txt
                     if exist requirements-dev.txt pip install -r requirements-dev.txt
 
                     pip install pytest pytest-cov junit-xml requests flask
 
-                    rem Asegura imports del proyecto
                     set PYTHONPATH=%CD%
                     python -c "import app; print('app import OK')"
                 '''
@@ -82,10 +81,10 @@ pipeline {
                     call %VENV_DIR%\\Scripts\\activate.bat
                     set PYTHONPATH=%CD%
 
-                    rem --- Flask API ---
+                    echo === Starting Flask on %FLASK_PORT% ===
                     start "flask-api" /B cmd /c "set FLASK_APP=app\\api.py && flask run --host=127.0.0.1 --port=%FLASK_PORT% > flask.log 2>&1"
 
-                    rem --- WireMock ---
+                    echo === Starting WireMock on %WIREMOCK_PORT% ===
                     if exist "%WIREMOCK_JAR%" (
                         start "wiremock" /B cmd /c "java -jar %WIREMOCK_JAR% --port %WIREMOCK_PORT% --root-dir %WIREMOCK_DIR% > wiremock.log 2>&1"
                     ) else (
@@ -93,29 +92,16 @@ pipeline {
                         exit /b 2
                     )
 
-                    rem --- Wait until ports are ready ---
-                    python - <<PY
-import socket, time, sys
-
-def wait_port(port, host="127.0.0.1", timeout_s=30):
-    start = time.time()
-    while time.time() - start < timeout_s:
-        try:
-            with socket.create_connection((host, port), timeout=1):
-                return True
-        except OSError:
-            time.sleep(0.5)
-    return False
-
-ok_flask = wait_port(int("%FLASK_PORT%"))
-ok_wire  = wait_port(int("%WIREMOCK_PORT%"))
-
-print("Flask ready:", ok_flask)
-print("WireMock ready:", ok_wire)
-
-if not (ok_flask and ok_wire):
-    sys.exit(1)
-PY
+                    echo === Waiting for ports (timeout %WAIT_TIMEOUT_SECONDS%s) ===
+                    python -c "import socket,time,sys; \
+t=time.time()+int('%WAIT_TIMEOUT_SECONDS%'); \
+def ok(p): \
+  try: s=socket.create_connection(('127.0.0.1',p),1); s.close(); return True; \
+  except OSError: return False; \
+ports=[int('%FLASK_PORT%'),int('%WIREMOCK_PORT%')]; \
+while time.time()<t and not all(ok(p) for p in ports): time.sleep(0.5); \
+print('Ports ready:', {p:ok(p) for p in ports}); \
+sys.exit(0 if all(ok(p) for p in ports) else 1)"
                 '''
             }
         }
@@ -143,9 +129,13 @@ PY
         always {
             bat '''
                 @echo on
-                rem cleanup best-effort
+                echo === Cleaning up background processes (best-effort) ===
                 taskkill /F /IM java.exe /T >NUL 2>&1
                 taskkill /F /IM python.exe /T >NUL 2>&1
+
+                echo === Logs (if any) ===
+                if exist flask.log type flask.log
+                if exist wiremock.log type wiremock.log
             '''
             archiveArtifacts artifacts: 'reports/*.xml,*.log', fingerprint: true, allowEmptyArchive: true
         }
