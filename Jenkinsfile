@@ -89,38 +89,42 @@ pipeline {
                     @echo on
                     call %VENV_DIR%\\Scripts\\activate.bat
                     set PYTHONPATH=%CD%
-
+        
                     echo === Starting Flask on %FLASK_PORT% ===
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
                       "$ErrorActionPreference='Stop';" ^
-                      "if (Test-Path '%FLASK_PID_FILE%') { Remove-Item -Force '%FLASK_PID_FILE%' -ErrorAction SilentlyContinue }" ^
-                      "if (Test-Path '%FLASK_LOG%') { Remove-Item -Force '%FLASK_LOG%' -ErrorAction SilentlyContinue }" ^
-                      "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('call %VENV_DIR%\\Scripts\\activate.bat ^& set PYTHONPATH=%CD% ^& set FLASK_RUN_PORT=%FLASK_PORT% ^& python -m flask --app app.api run --host 127.0.0.1 --port %FLASK_PORT% 1^>^>%FLASK_LOG% 2^>^&1') -PassThru -WindowStyle Hidden;" ^
+                      "if (Test-Path '%FLASK_PID_FILE%') { Remove-Item -Force '%FLASK_PID_FILE%' }" ^
+                      "if (Test-Path '%FLASK_LOG%') { Remove-Item -Force '%FLASK_LOG%' }" ^
+                      "$p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','call %VENV_DIR%\\Scripts\\activate.bat ^& set PYTHONPATH=%CD% ^& set FLASK_RUN_PORT=%FLASK_PORT% ^& python -m flask --app app.api run --host 127.0.0.1 --port %FLASK_PORT% > %FLASK_LOG% 2>&1' -PassThru -WindowStyle Hidden;" ^
                       "$p.Id | Out-File -Encoding ascii '%FLASK_PID_FILE%';" ^
                       "Write-Host ('Flask PID: ' + $p.Id)"
-
+        
                     echo === Starting WireMock on %WIREMOCK_PORT% ===
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
                       "$ErrorActionPreference='Stop';" ^
-                      "if (!(Test-Path '%WIREMOCK_JAR%')) { Write-Host 'WireMock jar not found at %WIREMOCK_JAR%'; exit 2 }" ^
-                      "if (Test-Path '%WIREMOCK_PID_FILE%') { Remove-Item -Force '%WIREMOCK_PID_FILE%' -ErrorAction SilentlyContinue }" ^
-                      "if (Test-Path '%WIREMOCK_LOG%') { Remove-Item -Force '%WIREMOCK_LOG%' -ErrorAction SilentlyContinue }" ^
-                      "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%','--root-dir','%WIREMOCK_DIR%' -PassThru -WindowStyle Hidden -RedirectStandardOutput '%WIREMOCK_LOG%' -RedirectStandardError '%WIREMOCK_LOG%';" ^
+                      "if (!(Test-Path '%WIREMOCK_JAR%')) { Write-Host 'WireMock jar not found'; exit 2 }" ^
+                      "if (Test-Path '%WIREMOCK_PID_FILE%') { Remove-Item -Force '%WIREMOCK_PID_FILE%' }" ^
+                      "if (Test-Path '%WIREMOCK_LOG%') { Remove-Item -Force '%WIREMOCK_LOG%' }" ^
+                      "$p = Start-Process -FilePath 'java.exe' -ArgumentList '-jar','%WIREMOCK_JAR%','--port','%WIREMOCK_PORT%','--root-dir','%WIREMOCK_DIR%' -PassThru -WindowStyle Hidden -RedirectStandardOutput '%WIREMOCK_LOG%';" ^
                       "$p.Id | Out-File -Encoding ascii '%WIREMOCK_PID_FILE%';" ^
                       "Write-Host ('WireMock PID: ' + $p.Id)"
-
+        
                     echo === Waiting for ports (timeout %WAIT_TIMEOUT_SECONDS%s) ===
                     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-                      "$ErrorActionPreference='Stop';" ^
                       "$timeout=[int]'%WAIT_TIMEOUT_SECONDS%';" ^
                       "$ports=@([int]'%FLASK_PORT%',[int]'%WIREMOCK_PORT%');" ^
                       "$deadline=(Get-Date).AddSeconds($timeout);" ^
-                      "function Test-Port($port){ try { $c = New-Object Net.Sockets.TcpClient; $iar = $c.BeginConnect('127.0.0.1',$port,$null,$null); if(-not $iar.AsyncWaitHandle.WaitOne(1000,$false)){ $c.Close(); return $false }; $c.EndConnect($iar); $c.Close(); return $true } catch { return $false } }" ^
-                      "while((Get-Date) -lt $deadline) { if($ports | ForEach-Object { Test-Port $_ } | Where-Object { $_ -eq $false } | Measure-Object | Select-Object -ExpandProperty Count -eq 0) { Write-Host 'Ports ready'; exit 0 }; Start-Sleep -Milliseconds 500 }" ^
+                      "function Test-Port($p){ try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $true } catch { $false } }" ^
+                      "while((Get-Date) -lt $deadline) {" ^
+                      "  $states = $ports | ForEach-Object { Test-Port $_ };" ^
+                      "  if(($states | Where-Object {$_ -eq $false}).Count -eq 0) { Write-Host 'Ports ready'; exit 0 }" ^
+                      "  Start-Sleep -Milliseconds 500" ^
+                      "}" ^
                       "Write-Host 'Ports NOT ready'; exit 1"
                 '''
             }
         }
+
 
         stage('Integration tests (REST)') {
             steps {
@@ -157,6 +161,7 @@ pipeline {
                 if exist %WIREMOCK_LOG% type %WIREMOCK_LOG%
             '''
             archiveArtifacts artifacts: 'reports/*.xml,*.log,*.pid', fingerprint: true, allowEmptyArchive: true
+            exit /b 0
         }
     }
 }
