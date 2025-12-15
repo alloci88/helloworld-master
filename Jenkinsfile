@@ -10,7 +10,7 @@ pipeline {
         FLASK_PORT = "5000"
         WIREMOCK_PORT = "9090"
         WIREMOCK_DIR = "test\\wiremock"
-        WIREMOCK_JAR = "test\\wiremock\\mappings\\wiremock-standalone-3.13.2.jar"
+        WIREMOCK_JAR = "test\\wiremock\\wiremock-standalone-3.13.2.jar"
         WAIT_TIMEOUT_SECONDS = "30"
         FLASK_PID_FILE = "flask.pid"
         WIREMOCK_PID_FILE = "wiremock.pid"
